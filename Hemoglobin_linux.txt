@@ -1,0 +1,110 @@
+###########################STEPS FOR EXTRACTING FPKM#####################################
+#          
+#           1 Trimming and Mapping
+#           
+##################################################################################################
+##All trimming, mapping and expression analyses were performed at Oklahoma State Universities high performance super computing center
+# Script runs Trim Galore on the files specified in the "TrimGalore_fastq_Location.txt".  Note: this is a tab delimited file.
+# The for loop is hard coded to the number to lines in the "TrimGalore_fastq_Locations.txt" file. 
+# "cat" opens the file.
+# "sed" is grabbing the ith line of the file.
+# "awk is grabbing the 1st, 2nd, or 3rd column from the line above.
+# "mikdir" is creating a directory with the name supplied in "TrimGalore_fastq_Locations.txt"
+# The end result of running this script is a new set of directories, trimmed files that match, and a fastqc report that 
+#     match the directory structure of your pre-processed read data.
+
+#Run trimgalore using quality 0 (to remove primer dimer)
+#Version: trimgalore/0.4.0
+#Version: fastqc/0.11.3
+#Version: cutadept/1.3
+for i in {1..n}
+
+do
+read1=$(cat TrimGalore_fastq_Location.txt | sed -n ''$i'p' | awk '{print $1}')
+read2=$(cat TrimGalore_fastq_Location.txt | sed -n ''$i'p' | awk '{print $2}')
+dirName=$(cat TrimGalore_fastq_Location.txt | sed -n ''$i'p' | awk '{print $3}')
+
+trim_galore --quality 0 --fastqc_args "--noextract --nogroup" --stringency 6 -e 0.2 --gzip --length 50 --output_dir <path to output directory> --paired $read1 $read2
+done
+
+##Trim files again by running the loop with quality 24
+#Version: trimgalore/0.4.0
+#Version: fastqc/0.11.3
+#Version: cutadept/1.3
+
+for i in {1..n}
+
+do
+read1=$(cat TrimGalore_fastq_Location.txt | sed -n ''$i'p' | awk '{print $1}')
+read2=$(cat TrimGalore_fastq_Location.txt | sed -n ''$i'p' | awk '{print $2}')
+dirName=$(cat TrimGalore_fastq_Location.txt | sed -n ''$i'p' | awk '{print $3}')
+
+trim_galore --quality 24 --fastqc_args "--noextract --nogroup" --stringency 6 -e 0.2 --gzip --length 50 --output_dir <path to output directory> --paired $read1 $read2
+done
+
+##Index Xiphophorus maculatus reference genome
+##Version: 0.7.12-r1039
+bwa index <path to reference genome>
+
+##Map reads to reference genome using BWA-mem aligner. -V Control the verbose level of the output (allowing for errors and warnings) -c Discard a MEM if it has more than 10000 occurence in the genome.
+##Version: 0.7.12-r1039
+##Do this step for all individuals
+bwa mem -v 2 -c 1000000 <path to indexed genome> <path to read 1> < path to read 2> > <filename.sam>
+
+##Convert Sam to Bam files 
+##-b outputs in the .bam format, -S detects .sam output and -h includes the header
+##Version: 0.1.19-44428cd
+##Do this step for all individuals
+samtools view -bSh <path to awk corrected .sam files> > <filename.bam>
+
+##Sort .bam files (based on coordinates) 
+##Version: 0.1.19-44428cd
+##Do this step for all individuals 
+samtools sort <path to .bam file> <filename.bam>
+
+##Check alignment statistics using samtools flagstat
+##Version: 0.1.19-44428cd
+##Do this step for all individuals
+samtools flagstat <path to sorted mapped reads.bam>
+
+###########################STEPS FOR EXTRACTING FPKM#####################################
+#          
+#           2 Cufflinks: Assemble transcriptomes and quantifies expression
+#           
+##################################################################################################
+##Cufflinks with -G tag, extract transcripts (Note, G tag is reference guided)
+#Do this for all individuals
+cufflinks -o <path_to_output> -G <path to .gtf> <path to sorted .bam file>
+
+###########################STEPS FOR EXTRACTING FPKM#####################################
+#          
+#           3 Extract FPKM for focal (hemoglobin) and control (representative of the genome) sets
+#           
+##################################################################################################
+##Match Xiphophorus maculatus with gene IDS by cutting only the XM_IDS from the main document, and greping out matches in the genes2accession file (XM IDs -> gene IDS)
+##ReferenceGeneXMIDs.txt, XMs_hemo.txt, gene2accession.Xmac are supplied
+##Pull out only the gene ids (cut -f16 as that is the correct column) and add them to a new file 
+tail -n+2 ReferenceGeneXMIDs.txt | cut -f3 | grep -f - gene2accession.Xmac | cut -f16 > <file_name>
+tail -n+2 XMs_hemo.txt | cut -f3 | grep -f - gene2accession.Xmac | cut -f16 > <file_name>
+
+###In the cufflinks output folder, pull out row based on the specific gene name (-w) listed in the gene IDS file generated above. 
+###For each one make sure you pull from the genes.fpkm_tracking output file
+###Add a column that prints out the sample name based on the folder; example cuff_MX71 will print if you are in the cuff_MX71 folder
+###output everything into folder (>>)
+for i in cuff_*;do grep -w -f ../pseudo/<filename_controlgenes>.txt ${i}/genes.fpkm_tracking | awk -v var=$i '{print $0"\t"var}' >> global_fpkm_ref_all.txt;done
+for i in cuff_*;do grep -w -f ../pseudo/<filename_hemoglobingenes>>.txt ${i}/genes.fpkm_tracking | awk -v var=$i '{print $0"\t"var}' >> global_fpkm_hemo.txt;done
+
+###########################STEPS FOR EXTRACTING FPKM#####################################
+#          
+#           4 Reciprocal BLAST
+#           
+##################################################################################################
+###At random, we extracted hemoglobin/myoglobin sequences from multiple individuals from each population and
+###Performed a reciprocal Blast using Blastx
+
+##Run BLASTx against the non-redundant protein sequences (NR) to identify gene annotations 
+#Make blast database
+makeblastdb -in <path to NR swissprot database> -parse_seqids -dbtype prot
+
+#BLASTX
+blastx -query <path to fasta> -db <Path to NR swissprot database> -evalue 0.001 -outfmt 5 > <path to output file.xml>
